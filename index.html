@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta name="description" content="">
+    <meta name="author" content="">
+
+    <title>ismydnslive.com</title>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+    <script src="https://atlas-stream.ripe.net/socket.io.js"></script>
+
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+
+    <style>
+        html {
+            position: relative;
+            min-height: 100%;
+        }
+        
+        body {
+            margin-bottom: 60px;
+        }
+        
+        .container {
+            width: auto;
+            max-width: 75%;
+            padding: 0 15px;
+        }
+    </style>
+
+    <script>
+        var socket = io("https://atlas-stream.ripe.net:443", {
+            path: "/stream/socket.io"
+        });
+
+        function handle_result(result) {
+            if (res_count == 0) $("#card3 .card-footer").html('<div class="progress"><div class="progress-bar" role="progressbar"></div><div class="progress-bar bg-success" role="progressbar"></div><div class="progress-bar bg-warning" role="progressbar"></div><div class="progress-bar bg-danger" role="progressbar"></div></div>');
+            res_count += 1;
+
+            $.getJSON('/api/step3/probe/' + result.prb_id, (function(c) {
+                return function(res) {
+                    $("#card3 .card-body tbody tr:nth-child(" + c + ") td:nth-child(3)").html(res.asn_v4);
+                    $("#card3 .card-body tbody tr:nth-child(" + c + ") td:nth-child(4)").html('<img src="https://cdn.rawgit.com/hjnilsson/country-flags/master/svg/' + res.country_code.toLowerCase() + '.svg" style="width: 24px;">');
+                }
+            })(res_count));
+
+            h = $("#card3 .card-body tbody");
+            o = '<tr>';
+            o += '<td>' + res_count + '</td>';
+            o += '<td>' + result.prb_id + '</td>';
+            o += '<td></td>';
+            o += '<td></td>';
+            o += '<td><ul>';
+
+            success = false;
+            fail = false;
+            for (i = 0; i < result.resultset.length; i++) {
+                if (result.resultset[i] && result.resultset[i].result && result.resultset[i].result.answers) {
+                    serial = result.resultset[i].result.answers[0].SERIAL;
+                    ttl = result.resultset[i].result.answers[0].TTL;
+                    if (serial == fresh_serial) {
+                        o += '<li class="text-success">';
+                        success = true;
+                    } else {
+                        o += '<li class="text-danger">';
+                        fail = true;
+                        if (ttl > biggest_ttl) biggest_ttl = ttl;
+                    }
+                    o += result.resultset[i].dst_addr + ': ' + serial + ' (' + ttl + ')</li>';
+                }
+            }
+            o += '</ul></td>';
+
+            if (success === true && fail === false) {
+                success_count++;
+                o += '<td class="text-success">All good.</td>';
+            } else if (success === true && fail === true) {
+                warning_count++;
+                o += '<td class="text-warning">Responses not consitent.</td>';
+            } else {
+                fail_count++;
+                o += '<td class="text-danger">Still old responses.</td>';
+            }
+
+            o += '</tr>';
+            h.append(o);
+
+            $("#card3 .card-footer .progress-bar.bg-success").css('width', success_count * 10 + '%');
+            $("#card3 .card-footer .progress-bar.bg-warning").css('width', warning_count * 10 + '%');
+            $("#card3 .card-footer .progress-bar.bg-danger").css('width', fail_count * 10 + '%');
+
+            if (res_count == 10) {
+                socket.emit("atlas_unsubscribe", {
+                    stream_type: "result",
+                    msm: msm_id
+                });
+                if (success_count >= 7) {
+                    $("#card4").addClass('text-white bg-success');
+                    $("#card4").append('<div class="card-body">Congrats! Your DNS zone is consitent accross most networks.</div>');
+                } else if (success_count >= 5) {
+                    $("#card4").addClass('text-white bg-warning');
+                    $("#card4").append('<div class="card-body">Oops! Most users will be provided with the current configuration, but some still do not see the changes. In ' + biggest_ttl + ' seconds most response caches should be expired.</div>');
+                } else {
+                    $("#card4").addClass('text-white bg-danger');
+                    $("#card4").append('<div class="card-body">Attention! Your zone changes are not yet consistently vissible for most users. In ' + biggest_ttl + ' seconds most response caches should be expired.</div>');
+                }
+            }
+        }
+
+        $(function() {
+            $("#step1").click(function(e) {
+                e.preventDefault();
+                $("#form").attr("disabled", true);
+
+                data = {
+                    ns: $('#ns').val() ? $('#ns').val() : '188.166.166.75',
+                    domain: $('#domain').val() ? $('#domain').val() : '04.dns-test.timwattenberg.de'
+                }
+
+                $.get('/api/step1', data, function(res) {
+                    fresh_serial = res;
+                    $("#card1").append('<div class="card-footer text-muted text-success">Success! Your name server responded with serial: ' + res + '</div>');
+                    $("#card2").append('<div class="card-body">...</div>');
+
+                    $.getJSON('/api/step2', data, function(res) {
+                        msm_id = res.measurements[0];
+                        $("#card2 .card-body").html('Your measurement on the RIPE Atlas platform: <a href="https://atlas.ripe.net/measurements/' + msm_id + '/">' + msm_id + '</a><br>Results of 10 probes should be streaming in shortly.');
+                        $("#card2").append('<div class="card-footer text-muted text-success">Success!</div>');
+
+                        $("#card3").append('<div class="card-body"><table class="table"><thead><tr><th>#</th><th>Probe</th><th>ASN</th><th>Country</th><th>Answer of name server: serial (TTL)</th><th>Result</th></tr></thead><tbody></tbody></table></div>');
+                        $("#card3").append('<div class="card-footer text-muted text-success">Waiting for results...</div>');
+
+                        res_count = 0;
+                        success_count = 0;
+                        warning_count = 0;
+                        fail_count = 0;
+                        biggest_ttl = 0;
+
+                        socket.emit("atlas_subscribe", {
+                            stream_type: "result",
+                            msm: msm_id
+                        });
+
+                        socket.on("atlas_result", handle_result);
+                    });
+                });
+            });
+        });
+    </script>
+</head>
+
+<body>
+    <main role="main" class="container">
+        <h1 class="mt-5">ismydnslive.com</h1>
+        <p class="lead">Check the global state of your DNS with the help of RIPE Atlas.</p>
+
+        <div class="card mb-3" id="card1">
+            <h5 class="card-header">1. Get the fresh SOA serial from your primary name server</h5>
+            <div class="card-body">
+                <form class="form-inline">
+                    <fieldset id="form">
+                        <label class="sr-only" for="domain">Domain</label>
+                        <input type="text" class="form-control mb-2 mr-sm-2" id="domain" placeholder="Domain">
+
+                        <label class="sr-only" for="ns">IP of NS</label>
+                        <input type="text" class="form-control mb-2 mr-sm-2" id="ns" placeholder="IP of NS">
+
+                        <button id="step1" class="btn btn-primary mb-2">Query</button>
+                    </fieldset>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mb-3" id="card2">
+            <h5 class="card-header">2. Create a measurement on the RIPE Atlas platform</h5>
+        </div>
+
+        <div class="card mb-3" id="card3">
+            <h5 class="card-header">3. Probe responses</h5>
+        </div>
+
+        <div class="card mb-3" id="card4">
+            <h5 class="card-header">4. Result</h5>
+        </div>
+    </main>
+</body>
+</html>
